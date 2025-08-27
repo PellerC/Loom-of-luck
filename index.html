@@ -66,6 +66,19 @@
     }
     #message { margin: 15px 0; font-size: 16px; color: white; font-weight: bold; }
     #footer { margin-top: 20px; font-size: 16px; color: white; font-weight: bold; }
+    #wallet-status { margin: 10px 0; font-size: 14px; color: white; }
+    #connect-wallet, #claim-reward { 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      background-color: #42A5F5; 
+      color: white; 
+      border: none; 
+      border-radius: 5px; 
+      cursor: pointer; 
+      margin: 10px;
+    }
+    #connect-wallet:hover, #claim-reward:hover { background-color: #2196F3; }
+    #game-grid { display: none; } /* Hidden until payment */
   </style>
 </head>
 <body>
@@ -74,11 +87,18 @@
       <img id="logo" src="https://raw.githubusercontent.com/PellerC/Loom-of-luck/main/mainlogo.png" alt="Loom of Luck Logo">
       <h1>LOOM OF LUCK</h1>
     </div>
-    <div id="grid"></div>
-    <div id="message"></div>
+    <div id="wallet-status">Not connected</div>
+    <button id="connect-wallet">Connect Wallet & Pay 0.05 tTRUST</button>
+    <div id="game-grid">
+      <div id="grid"></div>
+      <div id="message"></div>
+      <button id="claim-reward" style="display: none;">Claim 1 tTRUST Reward</button>
+    </div>
     <div id="footer">Fun Game by Newbie🩷</div>
   </div>
+  <script src="https://cdn.ethers.io/lib/ethers-5.7.umd.min.js"></script>
   <script>
+    // Fixed word list for consistency
     const words = [
       'apple', 'banana', 'cherry', 'date', 'elderberry', 'fig', 'grape', 'honeydew', 'kiwi', 'lemon',
       'mango', 'nectarine', 'orange', 'papaya', 'quince', 'raspberry', 'strawberry', 'tangerine', 'ugli', 'vanilla',
@@ -92,9 +112,78 @@
     ];
     const grid = document.getElementById('grid');
     const message = document.getElementById('message');
+    const walletStatus = document.getElementById('wallet-status');
+    const connectWalletButton = document.getElementById('connect-wallet');
+    const claimRewardButton = document.getElementById('claim-reward');
+    const gameGrid = document.getElementById('game-grid');
     let cards = [];
     let flippedCards = [];
     let matchedPair = false;
+    let provider, signer, contract, playerAddress;
+
+    // Placeholder: Replace with your tTRUST contract address and ABI
+    const contractAddress = 'YOUR_CONTRACT_ADDRESS_HERE'; // e.g., '0x123...'
+    const contractABI = [
+      // Standard ERC-20 ABI (partial)
+      {
+        "constant": false,
+        "inputs": [
+          { "name": "_to", "type": "address" },
+          { "name": "_value", "type": "uint256" }
+        ],
+        "name": "transfer",
+        "outputs": [{ "name": "success", "type": "bool" }],
+        "type": "function"
+      },
+      {
+        "constant": false,
+        "inputs": [
+          { "name": "_winner", "type": "address" },
+          { "name": "_amount", "type": "uint256" }
+        ],
+        "name": "claimReward",
+        "outputs": [],
+        "type": "function"
+      }
+    ];
+
+    async function connectWallet() {
+      if (window.ethereum) {
+        try {
+          provider = new ethers.providers.Web3Provider(window.ethereum);
+          await provider.send("eth_requestAccounts", []);
+          signer = provider.getSigner();
+          playerAddress = await signer.getAddress();
+          contract = new ethers.Contract(contractAddress, contractABI, signer);
+          walletStatus.textContent = `Connected: ${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)}`;
+
+          // Check cooldown via backend API
+          const cooldownResponse = await fetch('YOUR_BACKEND_API/check-cooldown', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ wallet: playerAddress })
+          });
+          const cooldownData = await cooldownResponse.json();
+          if (!cooldownData.canPlay) {
+            walletStatus.textContent = `Cooldown: Try again in ${cooldownData.remainingMinutes} minutes`;
+            return;
+          }
+
+          // Pay 0.05 tTRUST
+          const amount = ethers.utils.parseUnits('0.05', 18); // Assuming 18 decimals for tTRUST
+          const tx = await contract.transfer(contractAddress, amount);
+          await tx.wait();
+          walletStatus.textContent = 'Payment successful! Starting game...';
+          gameGrid.style.display = 'block';
+          connectWalletButton.style.display = 'none';
+          initializeGame();
+        } catch (error) {
+          walletStatus.textContent = `Error: ${error.message}`;
+        }
+      } else {
+        walletStatus.textContent = 'Please install MetaMask';
+      }
+    }
 
     function shuffle(array) {
       for (let i = array.length - 1; i > 0; i--) {
@@ -104,12 +193,21 @@
       return array;
     }
 
-    function initializeGame() {
-      const selectedWords = shuffle(words).slice(0, 89);
-      const duplicateWord = selectedWords[Math.floor(Math.random() * 89)];
-      const gameWords = [...selectedWords, duplicateWord];
-      shuffle(gameWords);
+    async function initializeGame() {
+      // Fetch daily grid from backend (stubbed)
+      const response = await fetch('YOUR_BACKEND_API/get-grid', {
+        method: 'GET'
+      });
+      let gameWords = await response.json(); // Expected: array of 90 words (89 unique + 1 duplicate)
       
+      // Fallback: client-side shuffle if API unavailable (for demo)
+      if (!gameWords) {
+        const selectedWords = words.slice(0, 89);
+        const duplicateWord = selectedWords[Math.floor(Math.random() * 89)];
+        gameWords = [...selectedWords, duplicateWord];
+        shuffle(gameWords);
+      }
+
       for (let i = 0; i < 90; i++) {
         const card = document.createElement('div');
         card.classList.add('card');
@@ -119,6 +217,13 @@
         grid.appendChild(card);
       }
       cards = document.querySelectorAll('.card');
+
+      // Log play to backend for cooldown
+      await fetch('YOUR_BACKEND_API/log-play', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wallet: playerAddress })
+      });
     }
 
     function flipCard(card) {
@@ -131,13 +236,14 @@
       }
     }
 
-    function checkMatch() {
+    async function checkMatch() {
       const [card1, card2] = flippedCards;
       if (card1.dataset.word === card2.dataset.word) {
         card1.classList.add('matched');
         card2.classList.add('matched');
         message.textContent = 'Congratulations! You found the matching pair!';
         matchedPair = true;
+        claimRewardButton.style.display = 'block';
       } else {
         setTimeout(() => {
           card1.classList.remove('flipped');
@@ -149,7 +255,32 @@
       }
     }
 
-    initializeGame();
+    async function claimReward() {
+      try {
+        // Backend verification (stubbed)
+        const verificationResponse = await fetch('YOUR_BACKEND_API/verify-win', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ wallet: playerAddress, matched: true })
+        });
+        const verificationData = await verificationResponse.json();
+        if (!verificationData.verified) {
+          walletStatus.textContent = 'Win verification failed';
+          return;
+        }
+
+        // Claim 1 tTRUST
+        const amount = ethers.utils.parseUnits('1', 18);
+        const tx = await contract.claimReward(playerAddress, amount);
+        await tx.wait();
+        walletStatus.textContent = 'Reward claimed: 1 tTRUST!';
+      } catch (error) {
+        walletStatus.textContent = `Error claiming reward: ${error.message}`;
+      }
+    }
+
+    connectWalletButton.addEventListener('click', connectWallet);
+    claimRewardButton.addEventListener('click', claimReward);
   </script>
 </body>
 </html>
